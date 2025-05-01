@@ -1,34 +1,37 @@
 # Background and Motivation
 
-This project aims to index blockchain data, focusing on Ethereum Mainnet contract deployments for the MVP. The goal is to provide a foundation for more advanced indexing and analytics across multiple chains and data points in the future.
+This project aims to index relevant blockchain data, with a primary focus on reducing dependency on third-party indexing platforms (such as Blockscout, Alchemy, etc.). The long-term goal is to build and maintain our own indexing infrastructure, starting with the most relevant data for our needs and expanding over time.
 
-## Original Project Overview
-- Index blockchain data (Ethereum, Base)
-- Data points: First Transaction timestamps, ETH Balances, Outgoing Transactions, Active Smart Contracts, Contracts Deployed (Mainnet/Testnet), Primary ENS Domain, ENS Account Age
+## Updated Project Goal
+- Index only the blockchain data relevant to our project, not all data.
+- Gradually decrease reliance on external indexing services by building our own indexers.
+- Step-by-step approach: start with a single, high-impact data type and expand coverage iteratively.
 
-## MVP Scope
-- Single Chain: Ethereum Mainnet
-- Single Data Point: Contract Deployments
-- Time Range: Last 1000 blocks
-- Output Format: CSV file
+## First Milestone
+- **Indexing Smart Contract Creation on Base Mainnet**
+- Use a Base Mainnet RPC URL as the data source (can be from a provider or self-hosted in the future).
 
 # Key Challenges and Analysis
+- Understanding and adapting to the Base Mainnet (an EVM-compatible L2 network)
 - Efficiently scanning and processing large block ranges
-- Identifying contract creation transactions accurately
-- Handling rate limits from Ethereum node providers
-- Ensuring data is saved reliably in CSV format
+- Identifying contract creation transactions accurately (to address is None, receipt has contractAddress)
+- Handling rate limits and reliability of the Base RPC endpoint
+- Ensuring data is saved reliably in a chosen format (CSV, database, etc.)
+- Laying the groundwork for future expansion to other data types and chains
 
 # High-level Task Breakdown
-- [ ] Set up environment and dependencies
-- [ ] Connect to Ethereum node
-- [ ] Scan last 1000 blocks for contract creation transactions
+- [ ] Set up environment and dependencies for Base Mainnet
+- [ ] Obtain and configure a Base Mainnet RPC URL
+- [ ] Connect to Base Mainnet using web3.py (or similar)
+- [ ] Scan a defined block range for contract creation transactions
 - [ ] Identify contract creation transactions (to address is None, receipt has contractAddress)
-- [ ] Save results to contract_creations.csv
+- [ ] Extract and store relevant data (block number, tx hash, contract address, creator, timestamp, gas used, etc.)
+- [ ] Save results to a CSV file (or other storage as needed)
 - [ ] Document process and results
 
 # Project Status Board
-- [ ] Environment setup
-- [ ] Node connection
+- [ ] Environment setup for Base Mainnet
+- [ ] RPC connection
 - [ ] Block scanning
 - [ ] Transaction identification
 - [ ] Data export
@@ -42,10 +45,10 @@ This project aims to index blockchain data, focusing on Ethereum Mainnet contrac
 
 ---
 
-## Implementation Details (from original README)
+## Implementation Details (for Base Mainnet)
 
 ### Contract Scanner (`contract_scanner.py`)
-- Scans the last 1000 blocks on Ethereum
+- Scans a defined block range on Base Mainnet
 - Identifies contract creation transactions
 - Stores relevant data in CSV format including:
   - Block Number
@@ -68,9 +71,9 @@ A transaction is identified as a contract creation when:
    ```
 3. Environment Variables:
    - Create a `.env` file
-   - Add your Ethereum node provider API key:
+   - Add your Base Mainnet RPC URL:
      ```
-     ALCHEMY_API_KEY=your_api_key_here
+     BASE_MAINNET_RPC_URL=your_base_mainnet_rpc_url_here
      ```
 
 ### Usage
@@ -80,19 +83,19 @@ python3 contract_scanner.py
 ```
 
 The script will:
-1. Connect to Ethereum mainnet
-2. Scan the last 1000 blocks
+1. Connect to Base Mainnet
+2. Scan the defined block range
 3. Identify contract creation transactions
 4. Save the results to `contract_creations.csv`
 
 ### Future Scope
-- Adding Base chain support
-- Implementing ENS event tracking
-- Real-time indexing
-- Database storage (e.g., Supabase)
-- Additional data points from the original scope
+- Add support for other data types (transfers, ENS, etc.)
+- Move to real-time indexing (websockets or polling)
+- Store data in a database for advanced querying
+- Run our own Base node to eliminate all third-party dependencies
+- Expand to other chains as needed
 
 ### Notes
 - The current implementation uses CSV for simplicity
-- Rate limiting depends on your Ethereum node provider
-- Block range (1000) was chosen for MVP testing purposes 
+- Rate limiting and reliability depend on your Base Mainnet RPC provider
+- Block range can be adjusted for testing or production use 

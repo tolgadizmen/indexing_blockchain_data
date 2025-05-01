@@ -41,4 +41,10 @@ mock_data/*.db
 mock_data/*.csv
 
 # Logs
-*.log 
+*.log
+
+# macOS system files
+.DS_Store
+
+# Cursor config
+.cursor/ 

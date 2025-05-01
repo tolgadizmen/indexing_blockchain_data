@@ -1,89 +1,90 @@
-from web3 import Web3
-import csv
-from datetime import datetime
 import os
+import logging
+from web3 import Web3
 from dotenv import load_dotenv
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('contract_scanner.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Load environment variables
-load_dotenv('.env')
+load_dotenv()
+base_rpc_url = os.getenv("BASE_MAINNET_RPC_URL")
 
-# Connect to Ethereum node
-alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{os.getenv('ALCHEMY_API_KEY')}"
-w3 = Web3(Web3.HTTPProvider(alchemy_url))
-
-# Check connection
-if not w3.is_connected():
-    print("Failed to connect to Ethereum node")
+if not base_rpc_url:
+    logger.error("BASE_MAINNET_RPC_URL not found in environment variables")
     exit(1)
 
-def scan_contract_creations(start_block, end_block):
-    """Scan blocks for contract creation transactions"""
-    contracts = []
-    
-    print(f"Scanning blocks from {start_block} to {end_block}")
-    
-    for block_number in range(start_block, end_block + 1):
-        try:
-            # Get block
-            block = w3.eth.get_block(block_number, full_transactions=True)
-            
-            # Process each transaction in the block
-            for tx in block.transactions:
-                # Check if transaction creates a contract (to address is None)
-                if tx.to is None:
-                    # Get transaction receipt to get contract address
-                    receipt = w3.eth.get_transaction_receipt(tx.hash)
-                    if receipt.contractAddress:
-                        contracts.append({
-                            'block_number': block_number,
-                            'tx_hash': tx.hash.hex(),
-                            'contract_address': receipt.contractAddress,
-                            'creator_address': tx['from'],
-                            'timestamp': datetime.utcfromtimestamp(block.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
-                            'gas_used': receipt.gasUsed
-                        })
-            
-            # Print progress every 100 blocks
-            if (block_number - start_block) % 100 == 0:
-                print(f"Processed block {block_number}")
-                
-        except Exception as e:
-            print(f"Error processing block {block_number}: {str(e)}")
-            continue
-    
-    return contracts
+w3 = Web3(Web3.HTTPProvider(base_rpc_url))
 
-def save_to_csv(contracts, filename='contract_creations.csv'):
-    """Save contract creation data to CSV"""
-    with open(filename, 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(['Block Number', 'Transaction Hash', 'Contract Address', 
-                        'Creator Address', 'Timestamp', 'Gas Used'])
+def check_rpc_connection() -> bool:
+    """
+    Check if the connection to Base Mainnet RPC is successful.
+    
+    Returns:
+        bool: True if connected successfully, False otherwise
+    """
+    try:
+        if not w3.is_connected():
+            logger.error("Failed to connect to Base Mainnet RPC")
+            return False
+        logger.info("Successfully connected to Base Mainnet RPC")
+        return True
+    except Exception as e:
+        logger.error(f"Error connecting to Base Mainnet RPC: {str(e)}")
+        return False
+
+def get_block_data(block_number: int) -> dict:
+    """
+    Fetch and process data for a specific block.
+    
+    Args:
+        block_number (int): The block number to fetch
         
-        for contract in contracts:
-            writer.writerow([
-                contract['block_number'],
-                contract['tx_hash'],
-                contract['contract_address'],
-                contract['creator_address'],
-                contract['timestamp'],
-                contract['gas_used']
-            ])
+    Returns:
+        dict: Block data including timestamp and transaction count
+    """
+    try:
+        block = w3.eth.get_block(block_number)
+        return {
+            'block_number': block_number,
+            'timestamp': block.timestamp,
+            'tx_count': len(block.transactions)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching block {block_number}: {str(e)}")
+        return None
 
 def main():
-    # Get latest block
-    latest_block = w3.eth.get_block('latest').number
-    start_block = latest_block - 1000
-    
-    print(f"Starting scan from block {start_block} to {latest_block}")
-    
-    # Scan for contract creations
-    contracts = scan_contract_creations(start_block, latest_block)
-    
-    # Save to CSV
-    save_to_csv(contracts)
-    print(f"Found {len(contracts)} contract creations")
-    print(f"Data saved to contract_creations.csv")
+    """
+    Main function to scan recent blocks on Base Mainnet.
+    Fetches the last 10 blocks and logs their details.
+    """
+    if not check_rpc_connection():
+        exit(1)
+
+    try:
+        latest_block = w3.eth.get_block('latest').number
+        logger.info(f"Fetching last 10 blocks from Base Mainnet (latest block: {latest_block})")
+        
+        for block_number in range(latest_block - 9, latest_block + 1):
+            block_data = get_block_data(block_number)
+            if block_data:
+                logger.info(
+                    f"Block {block_data['block_number']}: "
+                    f"Timestamp={block_data['timestamp']}, "
+                    f"TxCount={block_data['tx_count']}"
+                )
+    except Exception as e:
+        logger.error(f"Error in main execution: {str(e)}")
+        exit(1)
 
 if __name__ == "__main__":
     main() 

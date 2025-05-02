@@ -26,6 +26,8 @@ if not base_rpc_url:
     logger.error("BASE_MAINNET_RPC_URL not found in environment variables")
     exit(1)
 
+logger.info(f"Using RPC URL: {base_rpc_url}")
+
 w3 = Web3(Web3.HTTPProvider(base_rpc_url))
 
 # Rate limiting configuration
@@ -241,14 +243,13 @@ def save_to_csv(data: List[Dict[str, Any]], filename: str = 'block_data.csv'):
         # Save detailed transaction data to a separate file
         tx_filename = 'transaction_details.csv'
         if data[0]['transactions']:
+            # Always write headers for transaction details
             tx_fieldnames = data[0]['transactions'][0].keys()
-            tx_file_exists = os.path.isfile(tx_filename)
-            
-            with open(tx_filename, 'a' if tx_file_exists else 'w', newline='') as txfile:
+            with open(tx_filename, 'w', newline='') as txfile:  # Changed from 'a' to 'w'
                 writer = csv.DictWriter(txfile, fieldnames=tx_fieldnames)
-                if not tx_file_exists:
-                    writer.writeheader()
+                writer.writeheader()  # Always write headers
                 
+                # Write all transactions from all blocks
                 for block in data:
                     writer.writerows(block['transactions'])
             

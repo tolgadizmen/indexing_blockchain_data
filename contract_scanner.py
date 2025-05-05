@@ -1,296 +1,138 @@
 import os
-import csv
 import time
 import logging
 from web3 import Web3
 from dotenv import load_dotenv
-from datetime import datetime
-from typing import List, Dict, Any
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('contract_scanner.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+from database import store_block_data, store_transaction_data, test_connection, get_existing_block
 
 # Load environment variables
 load_dotenv()
-base_rpc_url = os.getenv("BASE_MAINNET_RPC_URL")
 
-if not base_rpc_url:
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Web3 with RPC URL from environment variables
+rpc_url = os.getenv("BASE_MAINNET_RPC_URL")
+if not rpc_url:
     logger.error("BASE_MAINNET_RPC_URL not found in environment variables")
     exit(1)
 
-logger.info(f"Using RPC URL: {base_rpc_url}")
+logger.info(f"Using RPC URL: {rpc_url}")
+w3 = Web3(Web3.HTTPProvider(rpc_url))
 
-w3 = Web3(Web3.HTTPProvider(base_rpc_url))
-
-# Rate limiting configuration
-RATE_LIMIT_DELAY = 0.5  # 500ms between requests
-MAX_RETRIES = 5
-INITIAL_BACKOFF = 2  # Initial backoff time in seconds
-MAX_BACKOFF = 32  # Maximum backoff time in seconds
-
-# Base-specific addresses
-BASE_BUNDLER = '0x4200000000000000000000000000000000000015'
-BASE_SEQUENCER = '0x4200000000000000000000000000000000000010'
-
-def check_rpc_connection() -> bool:
+def get_block_data(block_number):
     """
-    Check if the connection to Base Mainnet RPC is successful.
+    Get block data and format it for database storage
+    """
+    block = w3.eth.get_block(block_number, full_transactions=True)
     
-    Returns:
-        bool: True if connected successfully, False otherwise
+    # Format block data
+    block_data = {
+        "block_number": block.number,
+        "block_hash": f"0x{block.hash.hex()}",
+        "timestamp": block.timestamp,
+        "tx_count": len(block.transactions)
+    }
+    
+    return block_data, block.transactions
+
+def analyze_transaction(tx, block_number):
     """
-    try:
-        if not w3.is_connected():
-            logger.error("Failed to connect to Base Mainnet RPC")
-            return False
-        logger.info("Successfully connected to Base Mainnet RPC")
-        return True
-    except Exception as e:
-        logger.error(f"Error connecting to Base Mainnet RPC: {str(e)}")
+    Analyze transaction and format it for database storage
+    """
+    tx_hash = f"0x{tx.hash.hex()}"
+    
+    # Get transaction receipt
+    receipt = w3.eth.get_transaction_receipt(tx_hash)
+    
+    # Format transaction data
+    tx_data = {
+        "tx_hash": tx_hash,
+        "block_number": block_number,
+        "from_address": tx["from"],
+        "to_address": tx["to"],
+        "status": receipt.status,
+        "contract_address": receipt.contractAddress,
+        "logs_count": len(receipt.logs),
+        "tx_type": "contract_creation" if receipt.contractAddress else "normal"
+    }
+    
+    return tx_data
+
+def validate_block_data(block_number, expected_tx_count, actual_tx_count):
+    """
+    Validate that the number of transactions stored matches the block's transaction count
+    """
+    if expected_tx_count != actual_tx_count:
+        logger.warning(f"Transaction count mismatch for block {block_number}: expected {expected_tx_count}, got {actual_tx_count}")
         return False
-
-def make_rpc_request(func, *args, **kwargs):
-    """
-    Make an RPC request with rate limiting and exponential backoff.
-    
-    Args:
-        func: The RPC function to call
-        *args: Positional arguments for the function
-        **kwargs: Keyword arguments for the function
-        
-    Returns:
-        The result of the RPC call
-    """
-    backoff_time = INITIAL_BACKOFF
-    for attempt in range(MAX_RETRIES):
-        try:
-            time.sleep(RATE_LIMIT_DELAY)
-            return func(*args, **kwargs)
-        except Exception as e:
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                if attempt < MAX_RETRIES - 1:
-                    logger.warning(f"Rate limit hit (attempt {attempt + 1}/{MAX_RETRIES}), waiting {backoff_time} seconds...")
-                    time.sleep(backoff_time)
-                    backoff_time = min(backoff_time * 2, MAX_BACKOFF)  # Exponential backoff with cap
-                    continue
-            elif "Connection" in str(e):
-                logger.warning(f"Connection error (attempt {attempt + 1}/{MAX_RETRIES}), retrying...")
-                time.sleep(backoff_time)
-                backoff_time = min(backoff_time * 2, MAX_BACKOFF)
-                continue
-            logger.error(f"RPC request failed: {str(e)}")
-            return None
-    logger.error(f"Max retries ({MAX_RETRIES}) exceeded")
-    return None
-
-def analyze_transaction(tx_hash: str) -> Dict[str, Any]:
-    """
-    Analyze a single transaction.
-    
-    Args:
-        tx_hash (str): Transaction hash
-        
-    Returns:
-        dict: Transaction details
-    """
-    try:
-        tx = make_rpc_request(w3.eth.get_transaction, tx_hash)
-        if not tx:
-            return None
-            
-        tx_receipt = make_rpc_request(w3.eth.get_transaction_receipt, tx_hash)
-        if not tx_receipt:
-            return None
-        
-        # Determine transaction type
-        tx_type = "normal"
-        if tx['to'] == BASE_BUNDLER:
-            tx_type = "bundled"
-        elif tx['to'] == BASE_SEQUENCER:
-            tx_type = "sequencer"
-        elif not tx['to']:
-            tx_type = "contract_creation"
-        
-        return {
-            'tx_hash': tx_hash,
-            'from': tx['from'],
-            'to': tx['to'] if tx['to'] else 'Contract Creation',
-            'value': tx['value'],
-            'gas_price': tx['gasPrice'],
-            'gas_used': tx_receipt['gasUsed'],
-            'status': tx_receipt['status'],
-            'contract_address': tx_receipt['contractAddress'] if tx_receipt['contractAddress'] else None,
-            'logs_count': len(tx_receipt['logs']),
-            'tx_type': tx_type
-        }
-    except Exception as e:
-        logger.error(f"Error analyzing transaction {tx_hash}: {str(e)}")
-        return None
-
-def get_block_data(block_number: int) -> Dict[str, Any]:
-    """
-    Fetch and process data for a specific block.
-    
-    Args:
-        block_number (int): The block number to fetch
-        
-    Returns:
-        dict: Block data including timestamp and transaction count
-    """
-    try:
-        block = make_rpc_request(w3.eth.get_block, block_number, full_transactions=True)
-        if not block:
-            logger.error(f"Failed to fetch block {block_number}")
-            return None
-        
-        # Analyze transactions
-        transactions = []
-        tx_type_counts = {
-            'normal': 0,
-            'bundled': 0,
-            'sequencer': 0,
-            'contract_creation': 0
-        }
-        
-        # Process transactions in batches to avoid overwhelming the RPC
-        batch_size = 10
-        for i in range(0, len(block.transactions), batch_size):
-            batch = block.transactions[i:i + batch_size]
-            for tx in batch:
-                tx_data = analyze_transaction(tx.hash.hex())
-                if tx_data:
-                    transactions.append(tx_data)
-                    tx_type_counts[tx_data['tx_type']] += 1
-            # Add a small delay between batches
-            time.sleep(RATE_LIMIT_DELAY * 2)
-        
-        return {
-            'block_number': block_number,
-            'timestamp': block.timestamp,
-            'datetime': datetime.fromtimestamp(block.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
-            'tx_count': len(block.transactions),
-            'normal_tx_count': tx_type_counts['normal'],
-            'bundled_tx_count': tx_type_counts['bundled'],
-            'sequencer_tx_count': tx_type_counts['sequencer'],
-            'contract_creation_count': tx_type_counts['contract_creation'],
-            'gas_used': block.gasUsed,
-            'gas_limit': block.gasLimit,
-            'base_fee_per_gas': block.baseFeePerGas if hasattr(block, 'baseFeePerGas') else None,
-            'hash': block.hash.hex(),
-            'transactions': transactions
-        }
-    except Exception as e:
-        logger.error(f"Error fetching block {block_number}: {str(e)}")
-        return None
-
-def save_to_csv(data: List[Dict[str, Any]], filename: str = 'block_data.csv'):
-    """
-    Save block data to a CSV file.
-    
-    Args:
-        data (list): List of block data dictionaries
-        filename (str): Name of the output CSV file
-    """
-    try:
-        if not data:
-            logger.warning("No data to save to CSV")
-            return
-
-        # Prepare data for CSV (excluding full transaction details)
-        csv_data = []
-        for block in data:
-            csv_block = {
-                'block_number': block['block_number'],
-                'timestamp': block['timestamp'],
-                'datetime': block['datetime'],
-                'tx_count': block['tx_count'],
-                'normal_tx_count': block['normal_tx_count'],
-                'bundled_tx_count': block['bundled_tx_count'],
-                'sequencer_tx_count': block['sequencer_tx_count'],
-                'contract_creation_count': block['contract_creation_count'],
-                'gas_used': block['gas_used'],
-                'gas_limit': block['gas_limit'],
-                'base_fee_per_gas': block['base_fee_per_gas'],
-                'hash': block['hash']
-            }
-            csv_data.append(csv_block)
-
-        fieldnames = csv_data[0].keys()
-        
-        # Check if file exists to determine if we need to write headers
-        file_exists = os.path.isfile(filename)
-        
-        mode = 'a' if file_exists else 'w'
-        with open(filename, mode, newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
-            # Write headers only if creating a new file
-            if not file_exists:
-                writer.writeheader()
-            
-            writer.writerows(csv_data)
-            
-        logger.info(f"Successfully saved {len(data)} blocks to {filename}")
-        
-        # Save detailed transaction data to a separate file
-        tx_filename = 'transaction_details.csv'
-        if data[0]['transactions']:
-            # Always write headers for transaction details
-            tx_fieldnames = data[0]['transactions'][0].keys()
-            with open(tx_filename, 'w', newline='') as txfile:  # Changed from 'a' to 'w'
-                writer = csv.DictWriter(txfile, fieldnames=tx_fieldnames)
-                writer.writeheader()  # Always write headers
-                
-                # Write all transactions from all blocks
-                for block in data:
-                    writer.writerows(block['transactions'])
-            
-            logger.info(f"Successfully saved transaction details to {tx_filename}")
-            
-    except Exception as e:
-        logger.error(f"Error saving to CSV: {str(e)}")
+    return True
 
 def main():
     """
-    Main function to scan the latest block on Base Mainnet.
-    Fetches the most recent block and saves its details to CSV files.
+    Main function to process blocks and store data in Supabase
     """
-    if not check_rpc_connection():
-        exit(1)
-
-    try:
-        latest_block = make_rpc_request(w3.eth.get_block, 'latest').number
-        logger.info(f"Fetching latest block from Base Mainnet (block number: {latest_block})")
+    # Test database connection
+    if not test_connection():
+        logger.error("Failed to connect to Supabase. Exiting...")
+        return
+    
+    # Get latest block number
+    latest_block = w3.eth.block_number
+    logger.info(f"Latest block number: {latest_block}")
+    
+    # Process 3 blocks
+    total_transactions = 0
+    start_time = time.time()
+    
+    for i in range(3):
+        block_number = latest_block - i
+        block_start_time = time.time()
         
-        block_data = get_block_data(latest_block)
-        if block_data:
-            logger.info(
-                f"Block {block_data['block_number']}: "
-                f"Timestamp={block_data['datetime']}, "
-                f"TotalTx={block_data['tx_count']}, "
-                f"NormalTx={block_data['normal_tx_count']}, "
-                f"BundledTx={block_data['bundled_tx_count']}, "
-                f"SequencerTx={block_data['sequencer_tx_count']}, "
-                f"ContractCreations={block_data['contract_creation_count']}, "
-                f"GasUsed={block_data['gas_used']}"
-            )
-            # Save the collected data to CSV
-            save_to_csv([block_data])
-        else:
-            logger.error("Failed to fetch block data")
-            exit(1)
+        # Check if block already exists
+        if get_existing_block(block_number):
+            logger.info(f"Block {block_number} already exists in database, skipping...")
+            continue
         
-    except Exception as e:
-        logger.error(f"Error in main execution: {str(e)}")
-        exit(1)
+        logger.info(f"Processing block {block_number}")
+        
+        # Get block data
+        block_data, transactions = get_block_data(block_number)
+        expected_tx_count = len(transactions)
+        
+        # Store block data
+        block_result = store_block_data(block_data)
+        if not block_result:
+            logger.error(f"Failed to store block {block_number}")
+            continue
+        
+        # Process transactions
+        stored_tx_count = 0
+        for tx in transactions:
+            tx_data = analyze_transaction(tx, block_number)
+            tx_result = store_transaction_data(tx_data)
+            if tx_result:
+                stored_tx_count += 1
+            else:
+                logger.error(f"Failed to store transaction {tx_data['tx_hash']}")
+        
+        # Validate transaction count
+        if not validate_block_data(block_number, expected_tx_count, stored_tx_count):
+            logger.error(f"Transaction count validation failed for block {block_number}")
+        
+        total_transactions += stored_tx_count
+        block_time = time.time() - block_start_time
+        logger.info(f"Block {block_number} processed in {block_time:.2f} seconds")
+        logger.info(f"Transactions in block: {stored_tx_count}")
+    
+    # Calculate and log performance metrics
+    total_time = time.time() - start_time
+    avg_time_per_tx = total_time / total_transactions if total_transactions > 0 else 0
+    
+    logger.info(f"Total processing time: {total_time:.2f} seconds")
+    logger.info(f"Total transactions processed: {total_transactions}")
+    logger.info(f"Average time per transaction: {avg_time_per_tx:.4f} seconds")
 
 if __name__ == "__main__":
     main() 

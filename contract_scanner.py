@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import signal
 import logging
 import asyncio
 from web3 import Web3
@@ -11,16 +13,35 @@ from datetime import datetime
 load_dotenv()
 
 # Configure logging
-log_filename = f"contract_scanner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-file_handler = logging.FileHandler(log_filename, mode='w')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+log_filename = f'contract_scanner_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+report_filename = f'experiment_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
 
-logger = logging.getLogger(__name__)
+# Clear any existing handlers
+logging.getLogger().handlers = []
+
+# Create formatters
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# Create and configure file handler
+file_handler = logging.FileHandler(log_filename, mode='w', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(file_formatter)
+
+# Create and configure console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(console_formatter)
+
+# Configure root logger
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+# Force immediate flush of logs
+for handler in logger.handlers:
+    handler.flush()
 
 # Initialize Web3 with RPC URL from environment variables
 rpc_url = os.getenv("BASE_MAINNET_RPC_URL")
@@ -49,6 +70,72 @@ REQUEST_WINDOW = 1.0  # 1 second window for rate limiting
 # Block data cache
 block_cache = {}
 CACHE_SIZE = 20  # Maximum number of blocks to cache
+
+# Global variables for experiment tracking
+experiment_start_time = None
+experiment_start_block = None
+experiment_end_block = None
+experiment_contract_count = 0
+experiment_total_blocks = 0
+experiment_total_txs = 0
+experiment_rpc_requests = 0
+experiment_rpc_errors = 0
+
+# Add global shutdown flag
+shutdown_event = asyncio.Event()
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    logger.info(f"\nReceived signal {signum}. Cleaning up...")
+    
+    # Get current chain block number at shutdown
+    current_chain_block = w3.eth.block_number
+    
+    # Calculate experiment metrics
+    if experiment_start_time:
+        duration = time.time() - experiment_start_time
+        blocks_processed = experiment_end_block - experiment_start_block if experiment_end_block else 0
+        
+        logger.info("\n=== Experiment Results ===")
+        logger.info(f"Duration: {duration:.2f} seconds")
+        logger.info(f"Start Block: {experiment_start_block}")
+        logger.info(f"Last Processed Block: {experiment_end_block}")
+        logger.info(f"Current Chain Block: {current_chain_block}")
+        logger.info(f"Block Gap: {current_chain_block - experiment_end_block} blocks")
+        logger.info(f"Gap Percentage: {(current_chain_block - experiment_end_block)/current_chain_block*100:.2f}%")
+        logger.info(f"Blocks Processed: {blocks_processed}")
+        logger.info(f"Blocks per Second: {blocks_processed/duration:.2f}")
+        logger.info(f"Contract Creations Found: {experiment_contract_count}")
+        logger.info(f"Contracts per Second: {experiment_contract_count/duration:.2f}")
+        logger.info(f"Total Transactions Processed: {experiment_total_txs}")
+        logger.info(f"Average Transactions per Block: {experiment_total_txs/blocks_processed:.2f}")
+        logger.info(f"RPC Requests Made: {experiment_rpc_requests}")
+        logger.info(f"RPC Errors: {experiment_rpc_errors}")
+        if experiment_rpc_requests > 0:
+            logger.info(f"RPC Success Rate: {(experiment_rpc_requests - experiment_rpc_errors)/experiment_rpc_requests*100:.2f}%")
+        else:
+            logger.info("RPC Success Rate: N/A (no requests made)")
+    
+    # Force flush all handlers
+    for handler in logger.handlers:
+        handler.flush()
+    
+    # Force exit after a small delay to ensure logs are written
+    logger.info("Forcing exit in 2 seconds...")
+    time.sleep(2)
+    
+    # Close handlers before exit
+    for handler in logger.handlers:
+        handler.close()
+    
+    os._exit(0)
+
+def track_rpc_request(success=True):
+    """Track RPC request metrics"""
+    global experiment_rpc_requests, experiment_rpc_errors
+    experiment_rpc_requests += 1
+    if not success:
+        experiment_rpc_errors += 1
 
 async def track_request():
     """
@@ -298,74 +385,168 @@ async def process_block(block_number):
     
     return stored_contracts
 
+def write_report(content):
+    """Write content to the report file"""
+    with open(report_filename, 'a', encoding='utf-8') as f:
+        f.write(content + '\n')
+
+async def cleanup_and_shutdown():
+    """Clean up resources and generate final report."""
+    logger.info("Initiating cleanup and shutdown...")
+    
+    try:
+        # Calculate final metrics
+        end_time = time.time()
+        duration = end_time - experiment_start_time if experiment_start_time else 0
+        blocks_processed = experiment_end_block - experiment_start_block if experiment_end_block and experiment_start_block else 0
+        blocks_per_second = blocks_processed / duration if duration > 0 else 0
+        contracts_per_second = experiment_contract_count / duration if duration > 0 else 0
+        
+        # Calculate block gap
+        current_chain_block = w3.eth.block_number
+        block_gap = current_chain_block - experiment_end_block if experiment_end_block else 0
+        gap_percentage = (block_gap / current_chain_block * 100) if current_chain_block > 0 else 0
+        
+        # Calculate RPC success rate
+        rpc_success_rate = ((experiment_rpc_requests - experiment_rpc_errors) / experiment_rpc_requests * 100) if experiment_rpc_requests > 0 else 0
+        
+        # Calculate average transactions per block
+        avg_txs_per_block = experiment_total_txs / blocks_processed if blocks_processed > 0 else 0
+        
+        # Generate final report
+        report_content = f"""
+=== Final Experiment Results ===
+Duration: {duration:.2f} seconds
+Start Block: {experiment_start_block}
+Last Processed Block: {experiment_end_block}
+Current Chain Block: {current_chain_block}
+Block Gap: {block_gap} ({gap_percentage:.2f}%)
+Blocks Processed: {blocks_processed}
+Blocks per Second: {blocks_per_second:.2f}
+Contract Creations Found: {experiment_contract_count}
+Contracts per Second: {contracts_per_second:.2f}
+Total Transactions Processed: {experiment_total_txs}
+Average Transactions per Block: {avg_txs_per_block:.2f}
+RPC Requests Made: {experiment_rpc_requests}
+RPC Errors: {experiment_rpc_errors}
+RPC Success Rate: {rpc_success_rate:.2f}%
+=====================
+"""
+        
+        # Write final report
+        write_report(report_content)
+        
+        # Log the final report
+        logger.info(report_content)
+        
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
+        # Write error to report
+        error_content = f"\nError during cleanup: {str(e)}\n"
+        write_report(error_content)
+    
+    finally:
+        logger.info("Cleanup complete. Exiting...")
+        exit(0)
+
+async def timer():
+    """Timer function that sets the shutdown event"""
+    await asyncio.sleep(300)  # 5 minutes
+    logger.info("5-minute timer expired. Setting shutdown event...")
+    shutdown_event.set()
+
 async def main():
     """
     Main function to process blocks and store contract creation data
     """
+    # Set up signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    logger.info("Signal handlers set up. Script will run for 5 minutes.")
+    
     # Test database connection
     if not test_connection():
         logger.error("Failed to connect to Supabase. Exiting...")
         return
     
+    # Initialize experiment tracking
+    global experiment_start_time, experiment_start_block
+    experiment_start_time = time.time()
+    
     # Get latest block number
     await track_request()
     latest_block = w3.eth.block_number
+    experiment_start_block = latest_block
     logger.info(f"Latest block number: {latest_block}")
+    logger.info(f"Starting continuous processing at {datetime.now().isoformat()}")
     
-    # Process blocks
+    # Process blocks continuously
     total_contracts = 0
     start_time = time.time()
+    current_block = latest_block
     
-    # Create tasks for processing blocks
-    tasks = []
-    BLOCKS_TO_PROCESS = 100
-    first_block = latest_block - BLOCKS_TO_PROCESS + 1
-    last_block = latest_block
-    logger.info(f"Processing blocks from {first_block} to {last_block}")
+    # Start timer task
+    timer_task = asyncio.create_task(timer())
     
-    # Prefetch initial blocks
-    prefetch_tasks = []
-    for i in range(PREFETCH_BLOCKS):
-        block_number = latest_block - i
-        prefetch_tasks.append(prefetch_block_data(block_number))
-    await asyncio.gather(*prefetch_tasks)
-    
-    for i in range(BLOCKS_TO_PROCESS):
-        block_number = latest_block - i
-        tasks.append(process_block(block_number))
-    
-    # Wait for all tasks to complete
-    results = await asyncio.gather(*tasks)
-    total_contracts = sum(results)
-    
-    # Calculate and log performance metrics
-    total_time = time.time() - start_time
-    avg_time_per_contract = total_time / total_contracts if total_contracts > 0 else 0
-    blocks_per_second = BLOCKS_TO_PROCESS / total_time
-    contracts_per_second = total_contracts / total_time if total_contracts > 0 else 0
-    
-    # Log performance summary
-    summary = [
-        "=" * 50,
-        "PERFORMANCE SUMMARY",
-        "=" * 50,
-        f"Block Range: {first_block} to {last_block}",
-        f"Total Blocks Processed: {BLOCKS_TO_PROCESS}",
-        f"Total Contract Creations: {total_contracts}",
-        f"Total Processing Time: {total_time:.2f} seconds",
-        f"Average Time per Contract: {avg_time_per_contract:.4f} seconds",
-        f"Blocks Processed per Second: {blocks_per_second:.2f}",
-        f"Contract Creations per Second: {contracts_per_second:.2f}",
-        f"Log file created: {log_filename}",
-        "=" * 50
-    ]
-    
-    for line in summary:
-        logger.info(line)
-    
-    # Ensure all logs are written to file
-    for handler in logger.handlers:
-        handler.flush()
+    try:
+        while not shutdown_event.is_set():
+            # Get new latest block
+            await track_request()
+            new_latest_block = w3.eth.block_number
+            
+            if new_latest_block > current_block:
+                logger.info(f"Processing new blocks from {current_block} to {new_latest_block}")
+                
+                # Process each block
+                for block_number in range(current_block, new_latest_block + 1):
+                    if shutdown_event.is_set():
+                        break
+                    contracts_found = await process_block(block_number)
+                    total_contracts += contracts_found
+                    
+                    # Update experiment tracking
+                    global experiment_end_block, experiment_contract_count
+                    experiment_end_block = block_number
+                    experiment_contract_count = total_contracts
+                
+                current_block = new_latest_block + 1
+            else:
+                # If we're caught up, wait a bit before checking for new blocks
+                await asyncio.sleep(1)
+            
+            # Log progress every minute
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= 60:
+                blocks_processed = current_block - experiment_start_block
+                progress_content = f"""
+=== Progress Update ===
+Time Elapsed: {elapsed_time:.2f} seconds
+Blocks Processed: {blocks_processed}
+Contracts Found: {total_contracts}
+Current Block: {current_block}
+Processing Speed: {blocks_processed/elapsed_time:.2f} blocks/second
+=====================
+"""
+                # Write progress to report file
+                write_report(progress_content)
+                
+                # Log to console
+                logger.info(progress_content)
+                start_time = time.time()  # Reset timer for next update
+                
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Initiating shutdown...")
+        await cleanup_and_shutdown()
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        await cleanup_and_shutdown()
+    finally:
+        # If shutdown event is set, perform cleanup
+        if shutdown_event.is_set():
+            await cleanup_and_shutdown()
+        # Cancel timer task if it's still running
+        if not timer_task.done():
+            timer_task.cancel()
 
 if __name__ == "__main__":
     asyncio.run(main()) 

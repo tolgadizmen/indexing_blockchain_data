@@ -41,15 +41,4 @@ def store_transactions_batch(contract_data):
         return True
     except Exception as e:
         logger.error(f"Error storing contract creations: {str(e)}")
-        return False
-
-def store_transaction_data(transaction_data):
-    """
-    Store a single transaction in the transactions table
-    """
-    try:
-        response = supabase.table("transactions").insert(transaction_data).execute()
-        return True
-    except Exception as e:
-        logger.error(f"Error storing transaction data: {str(e)}")
         return False 

@@ -38,21 +38,17 @@ SUPABASE_KEY=your_supabase_key_here
 
 ## Database Schema
 
-### Blocks Table
-- `block_number` (primary key)
-- `block_hash`
-- `timestamp`
-- `tx_count`
-
-### Transactions Table
-- `tx_hash` (primary key)
-- `block_number` (foreign key)
-- `from_address`
-- `to_address`
-- `status`
-- `contract_address`
-- `logs_count`
-- `tx_type`
+### Contract Creations Table
+- `tx_hash` (TEXT, primary key) - Transaction hash of the contract creation
+- `block_number` (BIGINT) - Block number where the contract was created
+- `creator_address` (TEXT) - Address of the contract creator
+- `contract_address` (TEXT) - Address of the created contract
+- `creation_timestamp` (TIMESTAMP) - When the contract was created
+- `init_code_hash` (TEXT) - Hash of the contract's initialization code
+- `gas_used` (BIGINT) - Amount of gas used for contract creation
+- `status` (BOOLEAN) - Whether the transaction was successful
+- `logs_count` (INTEGER) - Number of event logs emitted
+- `metadata` (JSONB) - Additional metadata for future extensibility
 
 ## Usage
 Run the script:

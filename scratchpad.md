@@ -1,5 +1,6 @@
-# Background and Motivation
+# Blockchain Data Indexing Project
 
+## Background and Motivation
 This project aims to index relevant blockchain data, with a primary focus on reducing dependency on third-party indexing platforms (such as Blockscout, Alchemy, etc.). The long-term goal is to build and maintain our own indexing infrastructure, starting with the most relevant data for our needs and expanding over time.
 
 ## Updated Project Goal
@@ -27,29 +28,39 @@ This project aims to index relevant blockchain data, with a primary focus on red
 - [x] Connect to Base Mainnet using web3.py
 - [x] Set up Supabase database and tables
 - [x] Configure Row Level Security (RLS) policies
-- [x] Implement block and transaction data storage
-- [x] Add duplicate block checking
-- [x] Add transaction count validation
-- [x] Implement performance monitoring
-- [ ] Document process and results
+- [x] Implement contract creation detection and storage
+- [x] Add duplicate transaction checking
+- [x] Implement parallel processing with batching
+- [x] Add performance monitoring and logging
+- [x] Document process and results
 
 # Project Status Board
 - [x] Environment setup for Base Mainnet
 - [x] RPC connection
 - [x] Supabase integration
 - [x] Block scanning
-- [x] Transaction identification
+- [x] Contract creation detection
 - [x] Data validation
 - [x] Performance monitoring
-- [ ] Documentation
+- [x] Parallel processing
+- [x] Documentation
+
+# Latest Performance Metrics (as of latest run)
+- Total Blocks Processed: 100 blocks (29862098 to 29862197)
+- Total Processing Time: 3.14 seconds
+- Blocks Processed per Second: 31.87
+- Contract Creations Found: 6
+- Contract Creations per Second: 1.91
+- Average Time per Contract: 0.523 seconds
+- RPC Request Rate: Up to 50 RPS
 
 # Executor's Feedback or Assistance Requests
-- Successfully implemented Supabase integration
-- Added validation for transaction counts
-- Implemented duplicate block checking
-- Added performance metrics tracking
-- All HTTP requests returning 201 Created status codes
-- Average processing time: ~0.31 seconds per transaction
+- Successfully implemented parallel processing with batching
+- Added comprehensive logging with timestamp and block range
+- Implemented proper duplicate handling for contract creations
+- Optimized RPC request handling with rate limiting
+- All contract creations being stored with proper validation
+- Performance significantly improved with parallel processing
 
 # Lessons
 - Always include block_number in transaction data to maintain proper relationships
@@ -58,42 +69,46 @@ This project aims to index relevant blockchain data, with a primary focus on red
 - Add performance metrics to monitor and optimize processing
 - Use proper error handling and logging for debugging
 - Configure RLS policies carefully to ensure proper access control
+- Duplicate transactions are normal and should be handled gracefully
+- Use tx_hash as primary key to prevent duplicate contract creations
+- Include timestamp in log files for better tracking
+- Monitor and log RPC request rates to stay within limits
 
 ---
 
 ## Implementation Details (for Base Mainnet)
 
 ### Contract Scanner (`contract_scanner.py`)
-- Scans recent blocks on Base Mainnet
+- Scans recent blocks on Base Mainnet in parallel
 - Identifies contract creation transactions
 - Stores data in Supabase with proper relationships
-- Includes validation and performance monitoring
 - Features:
-  - Duplicate block checking
-  - Transaction count validation
-  - Performance metrics
-  - Detailed logging
+  - Parallel block processing (up to 8 concurrent batches)
+  - Transaction batching (25 transactions per batch)
+  - RPC rate limiting (50 RPS)
+  - Block data prefetching (5 blocks ahead)
+  - Block data caching (20 blocks)
+  - Comprehensive logging with timestamps
+  - Performance metrics tracking
+  - Duplicate transaction handling
 
 ### Database Schema (`database.py`)
-- Blocks table:
-  - block_number (primary key)
-  - block_hash
-  - timestamp
-  - tx_count
-- Transactions table:
-  - tx_hash
-  - block_number (foreign key)
-  - from_address
-  - to_address
-  - status
-  - contract_address
-  - logs_count
-  - tx_type
+- Contract Creations table:
+  - `tx_hash` (TEXT, primary key) - Transaction hash of the contract creation
+  - `block_number` (BIGINT) - Block number where the contract was created
+  - `creator_address` (TEXT) - Address of the contract creator
+  - `contract_address` (TEXT) - Address of the created contract
+  - `creation_timestamp` (TIMESTAMP) - When the contract was created
+  - `init_code_hash` (TEXT) - Hash of the contract's initialization code
+  - `gas_used` (BIGINT) - Amount of gas used for contract creation
+  - `status` (BOOLEAN) - Whether the transaction was successful
+  - `logs_count` (INTEGER) - Number of event logs emitted
+  - `metadata` (JSONB) - Additional metadata for future extensibility
 
 ### How Contract Creation is Identified
 A transaction is identified as a contract creation when:
-1. The transaction's `to` address is `None`
-2. The transaction receipt contains a `contractAddress`
+1. Initial check: transaction's `to` address is `None` OR input data matches creation patterns
+2. Confirmation: transaction receipt contains a `contractAddress`
 
 ### Setup and Requirements
 1. Python 3.9+
@@ -102,42 +117,34 @@ A transaction is identified as a contract creation when:
    pip install -r requirements.txt
    ```
 3. Environment Variables:
-   - Create a `.env` file
-   - Add your Base Mainnet RPC URL and Supabase credentials:
-     ```
-     BASE_MAINNET_RPC_URL=your_base_mainnet_rpc_url_here
-     SUPABASE_URL=your_supabase_url_here
-     SUPABASE_KEY=your_supabase_key_here
-     ```
+   ```
+   BASE_MAINNET_RPC_URL=your_base_mainnet_rpc_url_here
+   SUPABASE_URL=your_supabase_url_here
+   SUPABASE_KEY=your_supabase_key_here
+   ```
 
 ### Usage
-To scan for contract creations:
 ```bash
 python3 contract_scanner.py
 ```
 
 The script will:
-1. Connect to Base Mainnet
-2. Connect to Supabase
-3. Scan the three most recent blocks
-4. Store block and transaction data
-5. Validate transaction counts
-6. Log performance metrics
-
-### Performance Metrics
-- Average processing time per transaction: ~0.31 seconds
-- Block processing time: ~40-50 seconds per block
-- Transaction count per block: ~100-160 transactions
+1. Connect to Base Mainnet and Supabase
+2. Process the latest 100 blocks in parallel
+3. Identify and store contract creations
+4. Log performance metrics and block range
+5. Create timestamped log file
 
 ### Future Scope
 - Add support for other data types (transfers, ENS, etc.)
 - Move to real-time indexing (websockets or polling)
-- Implement batch processing for better performance
+- Implement smart prefetching based on contract creation patterns
 - Add more validation and error handling
 - Expand to other chains as needed
 
 ### Notes
-- The current implementation uses Supabase for efficient data storage and querying
-- Rate limiting and reliability depend on your Base Mainnet RPC provider
-- Block range can be adjusted for testing or production use
-- Performance metrics help identify bottlenecks and optimize processing 
+- Performance has been significantly improved with parallel processing
+- Duplicate prevention is working as intended
+- Logging provides clear visibility into processing status
+- Block range can be adjusted based on needs
+- RPC rate limiting ensures stable operation 
